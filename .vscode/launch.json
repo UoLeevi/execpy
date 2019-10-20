@@ -1,0 +1,26 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: execpy server",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/__init__.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": ["--server", "--port", "51111", "-m", "scope"]
+        },
+        {
+            "name": "Python: execpy client",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/__init__.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": ["--client", "--port", "51111", "--interactive"]
+        }
+    ]
+}
