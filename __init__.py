@@ -1,9 +1,5 @@
-import importlib
 import asyncio
-import argparse
 import textwrap
-
-mod = None
 
 async def write_message(writer, message):
     message = (message or '').encode()
@@ -24,13 +20,13 @@ async def exec_async(code, scope=None):
     return await scope['__f']()
 
 async def handle_request(reader, writer):
-    global mod
-    scope = None if mod is None else mod.get_scope()
+    loop = asyncio.get_running_loop()
     peername = writer.get_extra_info('peername')
     message = await read_message(reader)
 
     while message:
         print(f'Received from {peername}:\n {message}')
+        scope = getattr(loop, '_get_scope')()
 
         try:
             res = await exec_async(message, scope)
@@ -44,11 +40,18 @@ async def handle_request(reader, writer):
     writer.close()
     await writer.wait_closed()
 
-async def server(host, port, module, **kwargs):
+async def run_server(port=0, host='127.0.0.1', module=None, scope=None, **kwargs):
     if module:
-        global mod
+        import importlib
         mod = importlib.import_module(module)
         assert hasattr(mod, 'get_scope')
+        get_scope = mod.get_scope
+    else:
+        scope = scope or {}
+        get_scope = lambda: scope
+
+    loop = asyncio.get_running_loop()
+    setattr(loop, '_get_scope', get_scope)
 
     server = await asyncio.start_server(handle_request, host, port)
     address = server.sockets[0].getsockname()
@@ -58,7 +61,7 @@ async def server(host, port, module, **kwargs):
     async with server:
         await server.serve_forever()
 
-async def client(host, port, lines, interactive, **kwargs):
+async def connect(port, host='127.0.0.1', lines=None, interactive=False, **kwargs):
     def input_multiline():
         multiline = line = input(f'Send:\n ')
 
@@ -77,7 +80,7 @@ async def client(host, port, lines, interactive, **kwargs):
 
     reader, writer = await asyncio.open_connection(host, port)
 
-    if len(lines) != 0:
+    if lines and len(lines) != 0:
         message = '\n'.join(lines)
         await write_message(writer, message)
         res = await read_message(reader)
@@ -96,6 +99,7 @@ async def client(host, port, lines, interactive, **kwargs):
     await writer.wait_closed()
 
 def main():
+    import argparse
     parser = argparse.ArgumentParser(prog='execpy', description='Python interpreter server and client.', add_help=False)
     parser.add_argument('-s', '--server', help='run in server mode', action='store_true')
     parser.add_argument('-c', '--client', help='run in client mode', action='store_true')
@@ -105,7 +109,7 @@ def main():
     parser.add_argument('-m', '--module', help='module to import which defines get_scope() function that is used to construnct the globals argument for calls to exec', nargs='?')
     parser.add_argument('lines', help='lines of Python code to execute', nargs='*')
     args = parser.parse_args()
-    asyncio.run((server if args.server else client)(**vars(args)))
+    asyncio.run((run_server if args.server else connect)(**vars(args)))
 
 if __name__ == '__main__':
     main()
