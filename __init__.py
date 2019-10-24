@@ -1,5 +1,6 @@
 import asyncio
 import textwrap
+from base64 import b64decode
 
 async def write_message(writer, message):
     message = (message or '').encode()
@@ -21,12 +22,23 @@ async def exec_async(code, scope=None):
 
 async def handle_request(reader, writer):
     loop = asyncio.get_running_loop()
-    peername = writer.get_extra_info('peername')
+    get_scope = getattr(loop, '_get_scope')
+    quiet = getattr(loop, '_quiet')
+
+    if not quiet:
+        peername = writer.get_extra_info('peername')
+
     message = await read_message(reader)
 
     while message:
-        print(f'Received from {peername}:\n {message}')
-        scope = getattr(loop, '_get_scope')()
+        if not quiet:
+            print(f'Received from {peername}:\n {message}')
+
+        if message in [r'\q']:
+            setattr(loop, '_quit', True)
+            break
+
+        scope = get_scope()
 
         try:
             res = await exec_async(message, scope)
@@ -36,11 +48,13 @@ async def handle_request(reader, writer):
         await write_message(writer, '' if res is None else str(res))
         message = await read_message(reader)
 
-    print('Close the connection')
+    if not quiet:
+        print(f'Close the connection to {peername}')
+
     writer.close()
     await writer.wait_closed()
 
-async def run_server(port=0, host='127.0.0.1', module=None, scope=None, **kwargs):
+async def run_server(port=0, host='127.0.0.1', module=None, scope=None, quiet=False, exit=False, **kwargs):
     if module:
         import importlib
         mod = importlib.import_module(module)
@@ -52,28 +66,32 @@ async def run_server(port=0, host='127.0.0.1', module=None, scope=None, **kwargs
 
     loop = asyncio.get_running_loop()
     setattr(loop, '_get_scope', get_scope)
+    setattr(loop, '_quiet', quiet)
+    setattr(loop, '_quit', False)
 
     server = await asyncio.start_server(handle_request, host, port)
     address = server.sockets[0].getsockname()
 
-    print(f'Serving on {address}')
+    if not quiet:
+        print(f'Serving on {address}')
 
     async with server:
-        await server.serve_forever()
+        while not exit or not getattr(loop, '_quit'):
+            await asyncio.sleep(0.5)
 
-async def connect(port, host='127.0.0.1', lines=None, interactive=False, **kwargs):
+async def connect(port, host='127.0.0.1', lines=None, interactive=False, quiet=False, base64=False, exit=False, **kwargs):
     def input_multiline():
-        multiline = line = input(f'Send:\n ')
+        multiline = line = input(f'Send:\n')
 
         while line != '':
             if line in [r'\q']:
                 return None
 
             if line in [r'\c']:
-                multiline = line = input(f'Send:\n ')
+                multiline = line = input(f'Send:\n')
                 continue
 
-            line = input(f' ')
+            line = input()
             multiline += '\n' + line
 
         return multiline
@@ -81,20 +99,36 @@ async def connect(port, host='127.0.0.1', lines=None, interactive=False, **kwarg
     reader, writer = await asyncio.open_connection(host, port)
 
     if lines and len(lines) != 0:
+        if base64:
+            lines = [b64decode(line).decode() for line in lines]
+
         message = '\n'.join(lines)
         await write_message(writer, message)
         res = await read_message(reader)
-        print(f'Received:\n {res}')
+
+        if not quiet:
+            print('Received:')
+
+        print(res)
 
     if interactive:
         message = input_multiline()
         while message:
             await write_message(writer, message)
             res = await read_message(reader)
-            print(f'Received:\n {res}')
+
+            if not quiet:
+                print('Received:')
+
+            print(res)
             message = input_multiline()
 
-    print('Close the connection')
+    if exit:
+        await write_message(writer, r'\q')
+
+    if not quiet:
+        print('Close the connection')
+
     writer.close()
     await writer.wait_closed()
 
@@ -107,6 +141,9 @@ def main():
     parser.add_argument('-p', '--port', help='listening port', type=int, nargs='?', default=0)
     parser.add_argument('-i', '--interactive', help='run client in interactive mode', action='store_true')
     parser.add_argument('-m', '--module', help='module to import which defines get_scope() function that is used to construnct the globals argument for calls to exec', nargs='?')
+    parser.add_argument('-b', '--base64', help='interpret lines of code argument as base64 encoded utf-8 string', action='store_true')
+    parser.add_argument('-q', '--quiet', help='do not print any info messages', action='store_true')
+    parser.add_argument('-e', '--exit', help='allow clients to stop the server', action='store_true')
     parser.add_argument('lines', help='lines of Python code to execute', nargs='*')
     args = parser.parse_args()
     asyncio.run((run_server if args.server else connect)(**vars(args)))
